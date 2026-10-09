@@ -1,0 +1,77 @@
+---
+title: "Is There a Gender Pay Gap?"
+author: "Joy Xu"
+date: "2026-10-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+## Load packages and data
+
+```{r load-data}
+library(tidyverse)
+
+pay_gap <- read_csv("UK_gender_pay_gap_2017-18.csv")
+```
+## Inspect the data
+
+```{r inspect-data}
+glimpse(pay_gap)
+```
+## Data dictionary
+
+Each row represents one employer's gender pay gap submission.
+
+| Variable | Type | Description |
+|:---|:---|:---|
+| `EmployerName` | Character | Name of the employer submitting the gender pay gap report. |
+| `DiffMeanHourlyPercent` | Numeric | Percentage difference between men's and women's mean hourly pay, calculated as \((\text{male mean} - \text{female mean}) / \text{male mean} \times 100\). A positive value indicates that women's mean hourly pay is lower; a negative value indicates that women's mean hourly pay is higher. |
+## Mean gender pay gap
+
+`DiffMeanHourlyPercent` measures the percentage difference between men's and women's mean hourly pay. Positive values indicate that men's mean hourly pay is higher.
+
+```{r mean-pay-gap}
+pay_gap |>
+  summarise(
+    mean_pay_gap = mean(DiffMeanHourlyPercent, na.rm = TRUE)
+  )
+```
+
+## Distribution of the gender pay gap
+
+```{r pay-gap-histogram}
+ggplot(pay_gap, aes(x = DiffMeanHourlyPercent)) +
+  geom_histogram(binwidth = 5) +
+  coord_cartesian(xlim = c(-50, 100)) +
+  labs(
+    title = "Distribution of the Mean Hourly Gender Pay Gap",
+    x = "Mean hourly gender pay gap (%)",
+    y = "Number of employers",
+    caption = "UK gender pay gap reporting data, 2017–18. Display restricted to −50% to 100%; all observations retained in the analysis."
+  ) +
+  theme_minimal()
+```
+
+## Hypothesis
+
+The null hypothesis is that the population mean hourly gender pay gap is zero:
+
+\(H_0: \mu = 0\)
+
+The alternative hypothesis is that the population mean hourly gender pay gap is not zero:
+
+\(H_1: \mu \neq 0\)
+
+## One-sample t-test
+
+```{r one-sample-t-test}
+t.test(x = pay_gap$DiffMeanHourlyPercent, mu = 0)
+```
+## Results
+
+A one-sample \(t\)-test indicated that the mean hourly gender pay gap was significantly greater than zero, \(M = 14.29\%\), 95% CI \([14.00\%, 14.58\%]\), \(t(10,531) = 96.50\), \(p < .0001\). On average, women's mean hourly pay was approximately 14.29% lower than men's mean hourly pay.

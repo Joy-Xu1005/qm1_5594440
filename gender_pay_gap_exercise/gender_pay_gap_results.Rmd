@@ -1,0 +1,40 @@
+---
+title: "Is There a Gender Pay Gap?"
+author: "Joy Xu"
+date: "2026-10-09"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+## Analysis
+```
+The analysis examined whether the population mean hourly gender pay gap differed from zero. Positive values indicate that women's mean hourly pay is lower than men's mean hourly pay.
+
+```{r load-data}
+library(tidyverse)
+pay_gap <- read_csv("UK_gender_pay_gap_2017-18.csv")
+```
+
+## Distribution of the Gender Pay Gap
+
+```{r figure, fig.width=8, fig.height=5}
+ggplot(pay_gap, aes(x = DiffMeanHourlyPercent)) +
+  geom_histogram(binwidth = 5) +
+  coord_cartesian(xlim = c(-50, 100)) +
+  labs(
+    x = "Mean hourly gender pay gap (%)",
+    y = "Number of employers",
+    caption = "Figure 1. Distribution of the mean hourly gender pay gap. Display restricted to −50% to 100%; all observations were retained in the analysis."
+  ) +
+  theme_minimal()
+```
+
+## Results
+
+A one-sample \(t\)-test indicated that the mean hourly gender pay gap was significantly greater than zero, \(M = 14.29\%\), 95% CI \([14.00\%, 14.58\%]\), \(t(10,531) = 96.50\), \(p < .0001\). On average, women's mean hourly pay was approximately 14.29% lower than men's mean hourly pay. Therefore, the null hypothesis that the population mean hourly gender pay gap equals zero was rejected.
