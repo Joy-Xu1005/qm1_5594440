@@ -1,0 +1,345 @@
+---
+title: "How does the weather affect Capital Bikeshare hire?"
+subtitle: "Replication code for the bike-sharing regression exercise"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 7, fig.height = 4.5, fig.align = "center", dpi = 150
+)
+```
+
+```{r packages}
+library(tidyverse)   # readr, dplyr, ggplot2, tidyr, purrr
+library(broom)       # tidy() / glance() for model output
+library(knitr)       # kable() for tables
+
+theme_set(theme_minimal(base_size = 12))
+```
+
+# Data
+
+`day.csv` is the daily file from the UCI Machine Learning Repository *Bike Sharing Dataset*
+(Fanaee-T & Gama, 2013). It has one row per day from 1 January 2011 to 31 December 2012.
+Put `day.csv` in the same folder as this `.Rmd` before knitting.
+
+```{r read-data}
+bikes_raw <- read_csv("day.csv", show_col_types = FALSE)
+bikes_raw
+```
+
+## Data dictionary
+
+```{r data-dictionary}
+data_dictionary <- tribble(
+  ~variable,    ~description,
+  "instant",    "Record index",
+  "dteday",     "Date",
+  "season",     "Season (1 = spring, 2 = summer, 3 = fall, 4 = winter)",
+  "yr",         "Year (0 = 2011, 1 = 2012)",
+  "mnth",       "Month (1 to 12)",
+  "holiday",    "1 if the day is a public holiday, 0 otherwise",
+  "weekday",    "Day of the week (0 = Sunday to 6 = Saturday)",
+  "workingday", "1 if the day is neither a weekend nor a holiday, 0 otherwise",
+  "weathersit", "Weather (1 = clear/partly cloudy; 2 = mist/cloudy; 3 = light snow or rain; 4 = heavy rain, ice, snow or fog)",
+  "temp",       "Normalised temperature: (t - t_min) / (t_max - t_min), t_min = -8, t_max = +39 degrees C",
+  "atemp",      "Normalised 'feels like' temperature: t_min = -16, t_max = +50 degrees C",
+  "hum",        "Normalised humidity (divided by 100)",
+  "windspeed",  "Normalised wind speed (divided by 67, the maximum)",
+  "casual",     "Count of rentals by casual (unregistered) users",
+  "registered", "Count of rentals by registered users",
+  "cnt",        "Total count of rentals (casual + registered)",
+  "temp_c",     "NEW: temperature in degrees C = temp * (39 - (-8)) + (-8)",
+  "wind_mph",   "NEW: wind speed in miles per hour = windspeed * 67 (km/h) * 0.621371"
+)
+
+kable(data_dictionary, col.names = c("Variable", "Description"))
+```
+
+## Un-normalising temperature and wind speed
+
+Temperature was normalised as $(t - t_{min}) / (t_{max} - t_{min})$ with $t_{min} = -8$ and
+$t_{max} = 39$, so $t = \text{temp} \times 47 - 8$.
+Wind speed was divided by its maximum of 67. The source weather data (freemeteo) report wind in
+km/h, so we multiply by 67 to get km/h and then by 0.621371 to get miles per hour.
+
+```{r unnormalise}
+km_to_miles <- 0.621371
+
+bikes <- bikes_raw |>
+  mutate(
+    date     = as.Date(dteday),
+    temp_c   = temp * (39 - (-8)) + (-8),
+    wind_kmh = windspeed * 67,
+    wind_mph = wind_kmh * km_to_miles,
+    month    = factor(month.abb[mnth], levels = month.abb)
+  )
+
+bikes |>
+  select(cnt, temp_c, wind_mph) |>
+  summary()
+```
+
+```{r descriptives}
+descriptives <- bikes |>
+  select(`Bikes rented (cnt)` = cnt,
+         `Temperature (°C)` = temp_c,
+         `Wind speed (mph)` = wind_mph) |>
+  pivot_longer(everything(), names_to = "Variable") |>
+  group_by(Variable) |>
+  summarise(N = n(), Mean = mean(value), SD = sd(value),
+            Min = min(value), Median = median(value), Max = max(value),
+            .groups = "drop")
+
+kable(descriptives, digits = 1, caption = "Table 1. Descriptive statistics (N = 731 days)")
+
+# The day with the fewest rentals (29 October 2012, Hurricane Sandy)
+bikes |>
+  slice_min(cnt, n = 1) |>
+  select(dteday, cnt, temp_c, wind_mph)
+```
+
+# Univariate plots
+
+```{r univariate, fig.height = 3.2}
+p_cnt <- ggplot(bikes, aes(cnt)) +
+  geom_histogram(binwidth = 500, boundary = 0, fill = "#2C7FB8", colour = "white") +
+  labs(x = "Bikes rented per day", y = "Number of days",
+       title = "Daily bike rentals")
+
+p_temp <- ggplot(bikes, aes(temp_c)) +
+  geom_histogram(binwidth = 2, boundary = 0, fill = "#D95F0E", colour = "white") +
+  labs(x = "Temperature (°C)", y = "Number of days",
+       title = "Daily temperature")
+
+p_wind <- ggplot(bikes, aes(wind_mph)) +
+  geom_histogram(binwidth = 1, boundary = 0, fill = "#41AB5D", colour = "white") +
+  labs(x = "Wind speed (mph)", y = "Number of days",
+       title = "Daily wind speed")
+
+p_cnt; p_temp; p_wind
+```
+
+# Bivariate plots
+
+Always plot your data: a correlation or a slope can hide curvature, outliers or clusters.
+
+```{r bivariate}
+ggplot(bikes, aes(temp_c, cnt)) +
+  geom_point(alpha = 0.4, colour = "#D95F0E") +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black") +
+  geom_smooth(method = "loess", formula = y ~ x, se = FALSE,
+              colour = "grey40", linetype = "dashed") +
+  labs(x = "Temperature (°C)", y = "Bikes rented per day",
+       title = "Rentals by temperature",
+       subtitle = "Solid: linear fit with 95% CI; dashed: loess smooth")
+
+ggplot(bikes, aes(wind_mph, cnt)) +
+  geom_point(alpha = 0.4, colour = "#41AB5D") +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black") +
+  geom_smooth(method = "loess", formula = y ~ x, se = FALSE,
+              colour = "grey40", linetype = "dashed") +
+  labs(x = "Wind speed (mph)", y = "Bikes rented per day",
+       title = "Rentals by wind speed",
+       subtitle = "Solid: linear fit with 95% CI; dashed: loess smooth")
+
+ggplot(bikes, aes(wind_mph, temp_c)) +
+  geom_point(alpha = 0.4, colour = "#756BB1") +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black") +
+  labs(x = "Wind speed (mph)", y = "Temperature (°C)",
+       title = "Temperature by wind speed")
+```
+
+# Correlations
+
+```{r correlations}
+cor_matrix <- bikes |>
+  select(`Bikes rented` = cnt, `Temperature (°C)` = temp_c, `Wind speed (mph)` = wind_mph) |>
+  cor()
+
+kable(cor_matrix, digits = 2, caption = "Table 2. Pearson correlations")
+
+# Test of each pairwise correlation, with 95% CIs
+cor_tests <- list(
+  "Count – temperature"      = cor.test(bikes$cnt,    bikes$temp_c),
+  "Count – wind speed"       = cor.test(bikes$cnt,    bikes$wind_mph),
+  "Temperature – wind speed" = cor.test(bikes$temp_c, bikes$wind_mph)
+) |>
+  map_dfr(tidy, .id = "Pair") |>
+  select(Pair, r = estimate, conf.low, conf.high, t = statistic, df = parameter, p.value)
+
+kable(cor_tests, digits = 3)
+```
+
+A low correlation between the two predictors (wind speed and temperature) is good news:
+there is little **multicollinearity**, so the two variables carry largely separate information.
+Their coefficients in a multiple regression can therefore be estimated precisely (small standard
+errors, variance inflation factor close to 1) and are not very sensitive to which other predictor is
+in the model.
+
+```{r vif}
+r_tw <- cor(bikes$temp_c, bikes$wind_mph)
+vif  <- 1 / (1 - r_tw^2)
+vif
+```
+
+# Regressions
+
+```{r models}
+m_wind <- lm(cnt ~ wind_mph,          data = bikes)
+m_temp <- lm(cnt ~ temp_c,            data = bikes)
+m_both <- lm(cnt ~ wind_mph + temp_c, data = bikes)
+
+models <- list("Model 1: wind" = m_wind,
+               "Model 2: temperature" = m_temp,
+               "Model 3: wind + temperature" = m_both)
+
+coef_table <- models |>
+  map_dfr(~ tidy(.x, conf.int = TRUE), .id = "Model") |>
+  select(Model, term, estimate, std.error, conf.low, conf.high, statistic, p.value)
+
+kable(coef_table, digits = c(0, 0, 1, 1, 1, 1, 2, 4),
+      caption = "Table 3. Unstandardised regression coefficients with 95% CIs")
+
+fit_table <- models |>
+  map_dfr(glance, .id = "Model") |>
+  select(Model, r.squared, adj.r.squared, sigma, statistic, df, df.residual, p.value)
+
+kable(fit_table, digits = 3, caption = "Table 4. Model fit")
+```
+
+```{r key-numbers}
+b <- function(model, term) unname(coef(model)[term])
+
+b_temp_uni  <- b(m_temp, "temp_c")
+b_wind_uni  <- b(m_wind, "wind_mph")
+b_temp_both <- b(m_both, "temp_c")
+b_wind_both <- b(m_both, "wind_mph")
+
+tibble(
+  Question = c("Per °C (temperature alone)",
+               "Per mph (wind alone)",
+               "Per °C, holding wind constant",
+               "Per mph, holding temperature constant"),
+  `Change in bikes per day` = c(b_temp_uni, b_wind_uni, b_temp_both, b_wind_both)
+) |>
+  kable(digits = 1)
+```
+
+## Why does the wind-speed estimate change between models?
+
+In Model 1, wind speed is the only predictor, so its slope picks up anything correlated with wind
+that also affects rentals. Windier days in Washington DC tend to be cooler (negative correlation
+in Table 2), and cooler days have fewer rentals. Part of the apparent "wind effect" in Model 1 is
+therefore really a temperature effect: this is **omitted variable bias**. Model 3 estimates the
+association with wind *holding temperature constant*, removing the part shared with temperature.
+The size of the change is roughly the temperature slope multiplied by the slope of temperature
+on wind:
+
+```{r ovb}
+# Omitted variable bias identity: b_wind_uni = b_wind_both + b_temp_both * delta,
+# where delta is the slope from regressing temperature on wind speed
+delta <- coef(lm(temp_c ~ wind_mph, data = bikes))["wind_mph"]
+
+tibble(
+  `Wind slope, Model 1`          = b_wind_uni,
+  `Wind slope, Model 3`          = b_wind_both,
+  `Temp slope (Model 3) × delta` = b_temp_both * delta,
+  `Model 3 + bias term`          = b_wind_both + b_temp_both * delta
+) |>
+  kable(digits = 2)
+```
+
+## Which matters more: temperature or wind speed?
+
+The raw coefficients are in different units (°C vs mph), so we compare them on a common scale:
+(a) standardised coefficients (change in SD of rentals per SD of the predictor), and
+(b) the variance in rentals explained by each variable on its own.
+
+```{r importance}
+bikes_z <- bikes |>
+  mutate(across(c(cnt, temp_c, wind_mph), ~ as.numeric(scale(.x))))
+
+m_both_z <- lm(cnt ~ wind_mph + temp_c, data = bikes_z)
+
+tidy(m_both_z, conf.int = TRUE) |>
+  filter(term != "(Intercept)") |>
+  select(term, beta = estimate, conf.low, conf.high) |>
+  kable(digits = 2, caption = "Table 5. Standardised coefficients from Model 3")
+
+tibble(
+  Model = c("Wind only", "Temperature only", "Both"),
+  R2    = c(glance(m_wind)$r.squared, glance(m_temp)$r.squared, glance(m_both)$r.squared)
+) |>
+  kable(digits = 3)
+
+# A 1 SD change in each predictor, in the original units, and the change in rentals it implies
+tibble(
+  Predictor = c("Temperature", "Wind speed"),
+  `1 SD`    = c(sd(bikes$temp_c), sd(bikes$wind_mph)),
+  `Change in bikes per 1 SD (Model 3)` = c(b_temp_both * sd(bikes$temp_c),
+                                           b_wind_both * sd(bikes$wind_mph))
+) |>
+  kable(digits = 1)
+```
+
+# Does the temperature relationship vary across the year?
+
+```{r month-plot, fig.width = 9, fig.height = 7}
+ggplot(bikes, aes(temp_c, cnt)) +
+  geom_point(alpha = 0.4, size = 1, colour = "#D95F0E") +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black") +
+  facet_wrap(~ month, ncol = 4) +
+  labs(x = "Temperature (°C)", y = "Bikes rented per day",
+       title = "Rentals by temperature, separately for each month")
+```
+
+```{r month-slopes}
+month_slopes <- bikes |>
+  group_by(month) |>
+  group_modify(~ tidy(lm(cnt ~ temp_c, data = .x), conf.int = TRUE)) |>
+  ungroup() |>
+  filter(term == "temp_c") |>
+  select(month, estimate, std.error, conf.low, conf.high, p.value)
+
+kable(month_slopes, digits = c(0, 1, 1, 1, 1, 4),
+      caption = "Table 6. Slope of rentals on temperature (bikes per °C), by month")
+
+ggplot(month_slopes, aes(month, estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_hline(yintercept = b_temp_uni, colour = "#D95F0E") +
+  geom_pointrange(aes(ymin = conf.low, ymax = conf.high)) +
+  labs(x = NULL, y = "Change in bikes per day per °C",
+       title = "Temperature slope by month (95% CIs)",
+       subtitle = "Orange line: slope pooled over the whole year")
+```
+
+A single model with a temperature × month interaction tests whether the slopes differ:
+
+```{r month-interaction}
+m_add <- lm(cnt ~ temp_c + month, data = bikes)
+m_int <- lm(cnt ~ temp_c * month, data = bikes)
+
+anova(m_add, m_int) |>
+  tidy() |>
+  kable(digits = 4, caption = "Table 7. Does the temperature slope differ by month?")
+```
+
+One caveat: the data cover 2011 and 2012, and rentals grew strongly in the second year
+(see `yr`). Within-month slopes therefore also absorb some year-to-year growth, which is a
+reason not to over-interpret small differences between months.
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```
