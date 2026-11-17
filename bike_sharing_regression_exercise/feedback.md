@@ -8,7 +8,7 @@ For the "relative importance" section, you could have included ANOVA F ratios.
 
 
 
-# Feedback: bike sharing regression exercise
+# AI Feedback (Claude)
 
 This is an outstanding write-up. It reads like a real journal article, with well formatted tables, figures with notes, and a reference for the data. Some highlights:
 
