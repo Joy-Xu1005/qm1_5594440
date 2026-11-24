@@ -1,0 +1,196 @@
+---
+title: "Does the month matter in a marketing campaign?"
+subtitle: "Replication code for the bank marketing logistic regression exercise"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, fig.align = "center")
+```
+
+```{r packages}
+library(tidyverse)
+library(knitr)
+```
+
+# Data
+
+The data are the Bank Marketing dataset from the UCI Machine Learning Repository
+(Moro, Cortez & Rita, 2014): telephone marketing campaigns run by a Portuguese bank between
+May 2008 and November 2010. Put `bank-additional-full.csv` in the same folder as this `.Rmd`.
+
+The file uses semicolons, not commas, to separate columns (a common European convention,
+because the comma is used as the decimal mark), so it is read with `read_delim(delim = ";")`.
+
+```{r read-data}
+bank_raw <- read_delim("bank-additional-full.csv", delim = ";")
+glimpse(bank_raw)
+count(bank_raw, month)
+count(bank_raw, y)
+```
+
+## Data dictionary
+
+```{r data-dictionary}
+data_dictionary <- tribble(
+  ~variable, ~description,
+  "y",     "Whether the client subscribed to a term deposit (\"yes\" or \"no\")",
+  "month", "Month of the last contact with the client (\"mar\" to \"dec\"; the year is not recorded)"
+)
+kable(data_dictionary, col.names = c("Variable", "Description"))
+```
+
+```{r tidy-data}
+bank <- bank_raw |>
+  transmute(
+    subscribed = as.integer(y == "yes"),
+    month = factor(month, levels = c("mar", "apr", "may", "jun", "jul",
+                                     "aug", "sep", "oct", "nov", "dec"))
+  )
+glimpse(bank)
+```
+
+# Proportion subscribing and number contacted in each month
+
+```{r overall}
+# Overall proportion subscribing (reported in the write-up)
+bank |> summarise(n = n(), subscribed = sum(subscribed), prop = mean(subscribed))
+```
+
+```{r month-summary}
+month_summary <- bank |>
+  group_by(month) |>
+  summarise(n = n(), prop = mean(subscribed)) |>
+  mutate(share_of_contacts = n / sum(n))
+
+kable(month_summary, digits = 3)
+```
+
+There are no contacts in January or February, so those months are missing.
+
+```{r small-months}
+# Share of all contacts in the four months with the highest subscription rates
+month_summary |>
+  filter(month %in% c("mar", "sep", "oct", "dec")) |>
+  summarise(n = sum(n), share_of_contacts = sum(share_of_contacts))
+```
+
+# Logistic regression
+
+March is the first level of `month`, so it is the reference month. The model is
+
+$$\log\left(\frac{p_i}{1-p_i}\right) = \beta_0 + \beta_1\,\text{apr}_i + \beta_2\,\text{may}_i + \beta_3\,\text{jun}_i + \beta_4\,\text{jul}_i + \beta_5\,\text{aug}_i + \beta_6\,\text{sep}_i + \beta_7\,\text{oct}_i + \beta_8\,\text{nov}_i + \beta_9\,\text{dec}_i$$
+
+where $p_i$ is the probability that person $i$ subscribed, $\text{apr}_i$ to $\text{dec}_i$ are
+dummy variables equal to 1 if person $i$ was last contacted in that month and 0 otherwise,
+$\beta_0$ is the log odds of subscribing in March, and $\beta_1$ to $\beta_9$ are the differences
+in log odds between each month and March.
+
+```{r model}
+m1 <- glm(subscribed ~ month, family = binomial, data = bank)
+summary(m1)
+```
+
+## Does the proportion subscribing differ between months?
+
+A likelihood ratio test compares the model with month to a model with only an intercept
+(the same probability in every month).
+
+```{r lrt}
+m0 <- glm(subscribed ~ 1, family = binomial, data = bank)
+anova(m0, m1, test = "Chisq")
+```
+
+# Predicted probabilities with 95% CIs
+
+The confidence intervals are calculated on the log odds scale and then converted to
+probabilities, so they stay between 0 and 1.
+
+```{r predictions}
+pred_df <- tibble(month = factor(levels(bank$month), levels = levels(bank$month)))
+
+pred <- predict(m1, newdata = pred_df, type = "link", se.fit = TRUE)
+
+pred_df <- pred_df |>
+  mutate(
+    log_odds = pred$fit,
+    se       = pred$se.fit,
+    p        = plogis(log_odds),
+    lo       = plogis(log_odds - 1.96 * se),
+    hi       = plogis(log_odds + 1.96 * se)
+  )
+
+kable(pred_df, digits = 3)
+```
+
+```{r fig1}
+p_pred <- ggplot(pred_df, aes(x = month, y = p)) +
+  geom_pointrange(aes(ymin = lo, ymax = hi)) +
+  scale_x_discrete(labels = str_to_title) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.6)) +
+  labs(x = NULL,
+       y = "Probability of subscribing",
+       title = "Predicted probability of subscribing, by month",
+       subtitle = "Points are model predictions; bars are 95% confidence intervals") +
+  theme_minimal()
+
+p_pred
+ggsave("fig1_predicted_probabilities.png", p_pred, width = 7, height = 4, dpi = 300)
+```
+
+# The odds of a subscription in September
+
+```{r sep-odds}
+sep <- pred_df |> filter(month == "sep")
+sep_odds <- sep$p / (1 - sep$p)
+sep_odds
+```
+
+The odds are about 0.82: in September, roughly four people subscribed for every five who did not.
+This is not a probability; the probability of subscribing in September was about 45%.
+
+## By hand from the coefficients
+
+```{r sep-by-hand}
+b <- coef(m1)
+sep_log_odds_hand <- b["(Intercept)"] + b["monthsep"]           # 1. log odds
+sep_odds_hand     <- exp(sep_log_odds_hand)                      # 2. odds
+sep_p_hand        <- sep_odds_hand / (1 + sep_odds_hand)         # 3. probability
+
+c(log_odds = sep_log_odds_hand, odds = sep_odds_hand, p = sep_p_hand)
+sep   # matches the model predictions
+```
+
+# Why does the proportion subscribing vary over months?
+
+```{r fig2}
+p_why <- ggplot(month_summary, aes(x = n, y = prop)) +
+  geom_point(aes(size = n), colour = "#2C7FB8", alpha = 0.7, show.legend = FALSE) +
+  geom_text(aes(label = str_to_title(month)), vjust = -1.2, size = 3.5) +
+  scale_x_log10(labels = scales::comma) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.6)) +
+  labs(x = "People contacted in the month (log scale)",
+       y = "Proportion subscribing",
+       title = "Months with fewer contacts had higher subscription rates") +
+  theme_minimal()
+
+p_why
+ggsave("fig2_contacts_vs_subscription.png", p_why, width = 7, height = 4.5, dpi = 300)
+```
+
+Months in which the bank contacted fewer people had higher subscription rates. This is an
+association: these data cannot show why. The year of each contact is not recorded, so months may
+also differ in, for example, economic conditions during 2008 to 2010.
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```
